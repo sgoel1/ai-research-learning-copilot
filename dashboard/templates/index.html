@@ -1,0 +1,303 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>AI Research and Learning Copilot</title>
+  <style>
+    body { font-family: -apple-system, sans-serif; max-width: 1000px; margin: 40px auto; padding: 0 16px; color: #222; }
+    h1 { font-size: 1.5rem; }
+    h2 { font-size: 1.1rem; margin-top: 0; }
+    section { border: 1px solid #ddd; border-radius: 8px; padding: 16px; margin-bottom: 20px; }
+    .row { display: flex; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
+    input, select, textarea { padding: 6px 8px; font-size: 0.95rem; border: 1px solid #ccc; border-radius: 4px; }
+    input, select { flex: 1; min-width: 140px; }
+    textarea { flex: 1; min-width: 240px; width: 100%; min-height: 50px; }
+    button { padding: 6px 14px; cursor: pointer; border: 1px solid #888; border-radius: 4px; background: #f7f7f7; }
+    button:hover { background: #eee; }
+    table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+    th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #eee; font-size: 0.88rem; vertical-align: top; }
+    .muted { color: #777; font-size: 0.85rem; }
+    .error { color: #b3261e; }
+    .pill { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 0.75rem; background: #eee; }
+    .pill.completed { background: #d7f0dd; color: #0a7a2f; }
+    .pill.in_progress { background: #fff3cd; color: #8a6100; }
+    .pill.not_started { background: #eee; color: #555; }
+    #top-user { display: flex; gap: 8px; align-items: center; margin-bottom: 20px; }
+    #top-user input { max-width: 260px; }
+  </style>
+</head>
+<body>
+  <h1>📚 AI Research and Learning Copilot</h1>
+
+  <div id="top-user">
+    <label>Acting as:</label>
+    <input id="user-email" type="text" value="{{ default_user_email }}">
+    <button id="refresh-all">Refresh</button>
+  </div>
+
+  <section>
+    <h2>Learning Goals</h2>
+    <div class="row">
+      <input id="goal-title" placeholder="Title (e.g. Understand RAG)">
+      <input id="goal-keywords" placeholder="Topic keywords (comma-separated)">
+    </div>
+    <div class="row">
+      <textarea id="goal-description" placeholder="Description of what you want to learn"></textarea>
+    </div>
+    <button id="create-goal">Create goal</button>
+    <table>
+      <thead><tr><th>ID</th><th>Title</th><th>Topic keywords</th><th>Status</th></tr></thead>
+      <tbody id="goals-body"></tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Collections</h2>
+    <div class="row">
+      <input id="collection-name" placeholder="Collection name">
+      <select id="collection-goal"><option value="">(no linked goal)</option></select>
+      <button id="create-collection">Create collection</button>
+    </div>
+    <table>
+      <thead><tr><th>ID</th><th>Name</th><th></th></tr></thead>
+      <tbody id="collections-body"></tbody>
+    </table>
+
+    <div id="collection-detail" style="display:none; margin-top: 16px; border-top: 1px solid #eee; padding-top: 12px;">
+      <h3 id="collection-detail-title"></h3>
+      <button id="generate-plan">Generate reading plan</button>
+      <button id="get-next">What should I read next?</button>
+      <p id="next-paper-msg" class="muted"></p>
+      <table>
+        <thead><tr><th>#</th><th>Title</th><th>Year</th><th>Citations</th><th>Progress</th></tr></thead>
+        <tbody id="collection-papers-body"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>Discover Papers (live OpenAlex search)</h2>
+    <div class="row">
+      <input id="discover-topic" placeholder="Topic, e.g. retrieval augmented generation">
+      <select id="discover-target-collection"><option value="">Select collection to add to...</option></select>
+      <button id="discover-btn">Search</button>
+    </div>
+    <table>
+      <thead><tr><th>Title</th><th>Year</th><th>Citations</th><th>Authors</th><th></th></tr></thead>
+      <tbody id="discover-body"></tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Semantic Search (already-known papers)</h2>
+    <div class="row">
+      <input id="search-query" placeholder="e.g. hallucination mitigation techniques">
+      <button id="search-btn">Search</button>
+    </div>
+    <table>
+      <thead><tr><th>Paper ID</th><th>Similarity</th><th>Abstract snippet</th></tr></thead>
+      <tbody id="search-body"></tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Notes</h2>
+    <div class="row">
+      <input id="note-paper-id" placeholder="Paper ID (optional)">
+    </div>
+    <div class="row">
+      <textarea id="note-body" placeholder="Note text"></textarea>
+    </div>
+    <button id="add-note">Save note</button>
+    <table>
+      <thead><tr><th>Time</th><th>Paper</th><th>Note</th></tr></thead>
+      <tbody id="notes-body"></tbody>
+    </table>
+  </section>
+
+  <script>
+    const userEmail = () => document.getElementById('user-email').value.trim();
+    const qs = (params) => '?' + new URLSearchParams(params).toString();
+
+    async function getJSON(url) { return (await fetch(url)).json(); }
+    async function postJSON(url, body) {
+      return (await fetch(url, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) })).json();
+    }
+    function errRow(cols, message) {
+      return `<tr><td colspan="${cols}" class="error">${message}</td></tr>`;
+    }
+
+    let collectionsCache = [];
+
+    async function refreshGoals() {
+      const data = await getJSON('/api/goals' + qs({user_email: userEmail()}));
+      const body = document.getElementById('goals-body');
+      const goalSelect = document.getElementById('collection-goal');
+      body.innerHTML = '';
+      goalSelect.innerHTML = '<option value="">(no linked goal)</option>';
+      if (data.status !== 'success') { body.innerHTML = errRow(4, data.message); return; }
+      for (const g of data.learning_goals) {
+        body.innerHTML += `<tr><td>${g.id}</td><td>${g.title}</td><td>${g.topic_keywords}</td><td>${g.status}</td></tr>`;
+        goalSelect.innerHTML += `<option value="${g.id}">${g.title}</option>`;
+      }
+    }
+
+    async function refreshCollections() {
+      const data = await getJSON('/api/collections' + qs({user_email: userEmail()}));
+      const body = document.getElementById('collections-body');
+      const targetSelect = document.getElementById('discover-target-collection');
+      body.innerHTML = '';
+      targetSelect.innerHTML = '<option value="">Select collection to add to...</option>';
+      if (data.status !== 'success') { body.innerHTML = errRow(3, data.message); return; }
+      collectionsCache = data.collections;
+      for (const c of data.collections) {
+        body.innerHTML += `<tr><td>${c.id}</td><td>${c.name}</td><td><button onclick="showCollection(${c.id})">View</button></td></tr>`;
+        targetSelect.innerHTML += `<option value="${c.id}">${c.name}</option>`;
+      }
+    }
+
+    window.showCollection = async function(collectionId) {
+      const data = await getJSON(`/api/collections/${collectionId}`);
+      const detail = document.getElementById('collection-detail');
+      const body = document.getElementById('collection-papers-body');
+      detail.style.display = 'block';
+      detail.dataset.collectionId = collectionId;
+      body.innerHTML = '';
+      document.getElementById('next-paper-msg').textContent = '';
+      if (data.status !== 'success') {
+        document.getElementById('collection-detail-title').textContent = 'Error';
+        body.innerHTML = errRow(5, data.message);
+        return;
+      }
+      document.getElementById('collection-detail-title').textContent = `Collection: ${data.collection.name}`;
+      for (const p of data.papers) {
+        body.innerHTML += `<tr>
+          <td>${p.sequence_order ?? '-'}</td>
+          <td>${p.title}<div class="muted">${p.id}</div></td>
+          <td>${p.publication_year ?? '-'}</td>
+          <td>${p.cited_by_count ?? '-'}</td>
+          <td>
+            <span class="pill ${p.reading_status}">${p.reading_status}</span>
+            <select onchange="updateProgress('${p.id}', this.value, ${collectionId})">
+              <option value="">change...</option>
+              <option value="not_started">not_started</option>
+              <option value="in_progress">in_progress</option>
+              <option value="completed">completed</option>
+            </select>
+          </td>
+        </tr>`;
+      }
+    };
+
+    window.updateProgress = async function(paperId, status, collectionId) {
+      if (!status) return;
+      await postJSON('/api/progress', { paper_id: paperId, status, user_email: userEmail() });
+      showCollection(collectionId);
+    };
+
+    document.getElementById('generate-plan').addEventListener('click', async () => {
+      const collectionId = document.getElementById('collection-detail').dataset.collectionId;
+      if (!collectionId) return;
+      await postJSON(`/api/collections/${collectionId}/reading_plan`, {});
+      showCollection(Number(collectionId));
+    });
+
+    document.getElementById('get-next').addEventListener('click', async () => {
+      const collectionId = document.getElementById('collection-detail').dataset.collectionId;
+      if (!collectionId) return;
+      const data = await getJSON(`/api/collections/${collectionId}/next_paper` + qs({user_email: userEmail()}));
+      const msg = document.getElementById('next-paper-msg');
+      if (data.status !== 'success') { msg.textContent = data.message; return; }
+      msg.textContent = data.next_paper ? `Next up: ${data.next_paper.title} (${data.next_paper.publication_year ?? 'n.d.'})` : data.message;
+    });
+
+    document.getElementById('create-goal').addEventListener('click', async () => {
+      const title = document.getElementById('goal-title').value.trim();
+      const topic_keywords = document.getElementById('goal-keywords').value.trim();
+      const description = document.getElementById('goal-description').value.trim();
+      if (!title || !topic_keywords) return;
+      await postJSON('/api/goals', { title, topic_keywords, description, user_email: userEmail() });
+      document.getElementById('goal-title').value = '';
+      document.getElementById('goal-keywords').value = '';
+      document.getElementById('goal-description').value = '';
+      refreshGoals();
+    });
+
+    document.getElementById('create-collection').addEventListener('click', async () => {
+      const name = document.getElementById('collection-name').value.trim();
+      const learning_goal_id = document.getElementById('collection-goal').value || null;
+      if (!name) return;
+      await postJSON('/api/collections', { name, learning_goal_id, user_email: userEmail() });
+      document.getElementById('collection-name').value = '';
+      refreshCollections();
+    });
+
+    document.getElementById('discover-btn').addEventListener('click', async () => {
+      const topic = document.getElementById('discover-topic').value.trim();
+      if (!topic) return;
+      const data = await getJSON('/api/discover' + qs({topic, limit: 10}));
+      const body = document.getElementById('discover-body');
+      body.innerHTML = '';
+      if (data.status !== 'success') { body.innerHTML = errRow(5, data.message); return; }
+      for (const p of data.papers) {
+        const authorNames = (p.authors || []).slice(0, 3).map(a => a.display_name).join(', ');
+        body.innerHTML += `<tr>
+          <td>${p.title}<div class="muted">${p.id}</div></td>
+          <td>${p.publication_year ?? '-'}</td>
+          <td>${p.cited_by_count ?? '-'}</td>
+          <td>${authorNames}</td>
+          <td><button onclick="addToCollection('${p.id}')">Add to collection</button></td>
+        </tr>`;
+      }
+    });
+
+    window.addToCollection = async function(paperId) {
+      const collectionId = document.getElementById('discover-target-collection').value;
+      if (!collectionId) { alert('Pick a collection first.'); return; }
+      await postJSON(`/api/collections/${collectionId}/papers`, { paper_id: paperId });
+      alert(`Added ${paperId} to collection.`);
+    };
+
+    document.getElementById('search-btn').addEventListener('click', async () => {
+      const query = document.getElementById('search-query').value.trim();
+      if (!query) return;
+      const data = await getJSON('/api/search' + qs({query, limit: 8}));
+      const body = document.getElementById('search-body');
+      body.innerHTML = '';
+      if (data.status !== 'success') { body.innerHTML = errRow(3, data.message); return; }
+      for (const r of data.results) {
+        body.innerHTML += `<tr><td>${r.source_id}</td><td>${(r.similarity * 100).toFixed(1)}%</td><td>${(r.text || '').slice(0, 160)}...</td></tr>`;
+      }
+    });
+
+    async function refreshNotes() {
+      const data = await getJSON('/api/notes' + qs({user_email: userEmail()}));
+      const body = document.getElementById('notes-body');
+      body.innerHTML = '';
+      if (data.status !== 'success') { body.innerHTML = errRow(3, data.message); return; }
+      for (const n of data.notes) {
+        body.innerHTML += `<tr><td>${new Date(n.created_at).toLocaleString()}</td><td>${n.paper_id ?? '-'}</td><td>${n.body}</td></tr>`;
+      }
+    }
+
+    document.getElementById('add-note').addEventListener('click', async () => {
+      const body = document.getElementById('note-body').value.trim();
+      const paper_id = document.getElementById('note-paper-id').value.trim() || null;
+      if (!body) return;
+      await postJSON('/api/notes', { body, paper_id, user_email: userEmail() });
+      document.getElementById('note-body').value = '';
+      document.getElementById('note-paper-id').value = '';
+      refreshNotes();
+    });
+
+    function refreshEverything() {
+      refreshGoals();
+      refreshCollections();
+      refreshNotes();
+    }
+
+    document.getElementById('refresh-all').addEventListener('click', refreshEverything);
+    refreshEverything();
+  </script>
+</body>
+</html>
